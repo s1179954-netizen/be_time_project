@@ -1,0 +1,12 @@
+# 本地个人数据（不传到公开仓库）
+be_time_state.json
+
+# 敏感配置（含密钥/凭据，禁止上传）
+.env
+
+# 本地数据库 / 缓存目录
+chroma_db/
+
+# Python 缓存
+__pycache__/
+*.pyc

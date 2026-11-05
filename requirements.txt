@@ -1,0 +1,2 @@
+streamlit>=1.30
+ics>=0.7
