@@ -38,6 +38,8 @@ def save_state():
             "dark_mode": st.session_state.get("dark_mode", False),
             "identity_mode": st.session_state.get("identity_mode", "student"),
             "selected_industry": st.session_state.get("selected_industry", "金融"),
+            "goal_mode": st.session_state.get("goal_mode", "career"),
+            "onboarding_done": st.session_state.get("onboarding_done", True),
             "timeline_view": st.session_state.get("timeline_view", "all"),
             "scores": st.session_state.get("scores", {}),
             "applications": st.session_state.get("applications", []),
@@ -970,6 +972,8 @@ def init_state():
         },
         "identity_mode": "student",
         "selected_industry": "金融",
+        "goal_mode": "career",
+        "onboarding_done": True,
         "timeline_view": "all",
         "starred_events": set(),
         "finished_events": set(),
@@ -996,9 +1000,12 @@ def init_state():
         for k in ["trip_plan", "fav_places", "saved_articles", "user_profile", "applications", "alert_log", "discussions"]:
             if k in saved:
                 st.session_state[k] = saved[k]
-        for k in ["place_seed", "free_hours", "dark_mode", "identity_mode", "selected_industry", "timeline_view"]:
+        for k in ["place_seed", "free_hours", "dark_mode", "identity_mode", "selected_industry", "timeline_view", "goal_mode", "onboarding_done"]:
             if k in saved:
                 st.session_state[k] = saved[k]
+    else:
+        # 完全没有历史数据 = 新用户：先展示个性化引导页
+        st.session_state["onboarding_done"] = False
 
 init_state()
 
@@ -1312,6 +1319,58 @@ def render_cover():
 
     st.stop()
 
+# -------------------------- 新用户个性化引导页（可跳过） --------------------------
+def render_onboarding():
+    """新用户首次进入时：填昵称 / 目标方向 / 偏好行业，用于个性化推荐；可跳过。"""
+    st.markdown("""
+    <style>
+    .ob-wrap { text-align:center; padding:56px 16px 24px 16px; }
+    .ob-badge { font-size:3.2rem; }
+    .ob-title { font-size:1.9rem; font-weight:800; color:#1f4e79; margin:6px 0 4px 0; }
+    .ob-sub { color:#777; font-size:0.95rem; margin-bottom:20px; }
+    .ob-card {
+        background: linear-gradient(135deg, #eef6ff, #f3eeff);
+        border:1px solid #e3e8f5;
+        border-radius:18px;
+        padding:26px 26px 10px 26px;
+        margin:0 auto 18px auto;
+        max-width:620px;
+        text-align:left;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="ob-wrap"><div class="ob-badge">🎓</div>'
+                '<div class="ob-title">欢迎来到 Be-Time</div>'
+                '<div class="ob-sub">花 10 秒告诉我们你的方向，后面每个页面都会更懂你（也可以直接跳过）</div></div>',
+                unsafe_allow_html=True)
+    with st.container():
+        st.markdown('<div class="ob-card">', unsafe_allow_html=True)
+        name = st.text_input("👤 怎么称呼你？（可留空）", key="ob_name", placeholder="例如：阿豪")
+        goal = st.radio("🎯 你更关注哪个方向？", ["求职就业", "学术深造"], horizontal=True, key="ob_goal")
+        industry = st.selectbox("🏢 求职最想进的行业（校招推荐会优先展示）",
+                                ["金融", "互联网", "科技", "新能源", "综合集团", "暂时没想好"],
+                                key="ob_industry")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([2, 1, 2])
+    with c2:
+        if st.button("🚀 开始我的 Be-Time", key="ob_start", use_container_width=True):
+            nm = (name or "").strip()
+            if nm:
+                st.session_state["user_profile"]["name"] = nm
+            st.session_state["goal_mode"] = "academic" if goal == "学术深造" else "career"
+            st.session_state["selected_industry"] = industry
+            st.session_state["onboarding_done"] = True
+            save_state()  # 立即持久化，防止 rerun 后从旧 JSON 恢复
+            st.rerun()
+    c4, c5, c6 = st.columns([2, 1, 2])
+    with c5:
+        if st.button("先跳过，随便逛逛", key="ob_skip", use_container_width=True):
+            st.session_state["onboarding_done"] = True
+            save_state()  # 立即持久化
+            st.rerun()
+
+
 # -------------------------- 顶部导航（可点击、真正生效的菜单栏） --------------------------
 def render_navbar():
     # 说明：原版用自定义 HTML + parent.postMessage 做下拉，但 Streamlit 里没有任何 JS 监听该消息，
@@ -1405,6 +1464,50 @@ def render_academic_alerts(evts=None):
 
 
 # -------------------------- 学期进度 + 最近截止倒计时 --------------------------
+# -------------------------- 个性化欢迎横幅（昵称 + 按方向的下一件要紧事） --------------------------
+def render_personal_banner(events):
+    now = datetime.now()
+    name = (st.session_state["user_profile"].get("name") or "").strip() or "同学"
+    goal = st.session_state.get("goal_mode", "career")
+    goal_label = "🎓 学术深造" if goal == "academic" else "💼 求职就业"
+    # 按方向找下一件未完成的事
+    is_career = goal == "career"
+    pend = [e for e in events if e["is_career"] == is_career
+            and e["datetime"] >= now and e["date"] not in st.session_state["finished_events"]]
+    pend = sorted(pend, key=lambda x: x["datetime"])
+    if pend:
+        nxt = pend[0]
+        days = (nxt["datetime"] - now).days
+        zone_key = "job_timeline" if is_career else "study_all"
+        zone_label = "求职时间轴" if is_career else "学业工作台"
+        st.markdown(f"""
+        <div class="card fade-in" style="background:linear-gradient(135deg,#eaf4ff,#f0ecff);border:1px solid #dfe6f8;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+                <div>
+                    <span style="font-size:1.05rem;">👋 下午好，<b>{name}</b></span>
+                    <span style="margin-left:10px;background:#1f4e79;color:#fff;padding:2px 12px;border-radius:999px;font-size:0.78rem;">{goal_label}</span>
+                </div>
+                <div style="color:#555;font-size:0.9rem;">
+                    🎯 你的下一件要紧事：<b>{nxt['title']}</b>
+                    <span style="color:{'#e74c3c' if days <= 3 else '#e67e22' if days <= 7 else '#3498db'};font-weight:700;">（剩 {days} 天）</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        c_a, c_b, c_c = st.columns([2, 2, 4])
+        with c_b:
+            if st.button(f"去处理 → 打开{zone_label}", key="banner_go", use_container_width=True):
+                st.session_state["current_page"] = zone_key
+                st.rerun()
+    else:
+        st.markdown(f"""
+        <div class="card fade-in" style="background:linear-gradient(135deg,#eaf4ff,#f0ecff);border:1px solid #dfe6f8;">
+            👋 下午好，<b>{name}</b>　<span style="background:#1f4e79;color:#fff;padding:2px 12px;border-radius:999px;font-size:0.78rem;">{goal_label}</span>
+            <span style="margin-left:12px;color:#888;">当前方向暂无待办，可以休息一下 🎉</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def render_deadline_head(events):
     now = datetime.now()
     future = [e for e in events if e["datetime"] >= now]
@@ -1665,6 +1768,15 @@ def render_ai_planner(events):
         for p in plan:
             st.markdown(f"- {p}")
 # -------------------------- 求职赛道模块 --------------------------
+# 行业偏好 → 校招企业 type 映射（用于个性化筛选）
+INDUSTRY_FILTER = {
+    "金融": ["银行", "四大", "券商"],
+    "互联网": ["互联网", "科技"],
+    "新能源": ["新能源车", "能源"],
+    "综合集团": ["综合集团", "交通", "航空", "能源公用"],
+}
+
+
 def render_job_recruit():
     st.subheader("💼 招聘信息库")
     mode = st.radio("身份选择", ["student", "social"], horizontal=True,
@@ -1674,18 +1786,32 @@ def render_job_recruit():
     if mode == "student":
         st.markdown("#### 🎓 校招岗位（2026 秋招 · 银行 / 四大 / 券商 / 大企业）")
         st.caption("每张卡片一家公司，从左到右排布；点「💬 唤起助手」让它帮你准备面经和简历")
+        # 按个性化行业偏好筛选（引导页填过就记住；也可随时手动切换）
+        filter_opts = ["全部"] + list(INDUSTRY_FILTER.keys())
+        default_f = st.session_state.get("selected_industry", "金融")
+        if default_f not in filter_opts:
+            default_f = "全部"
+        pref = st.selectbox("🏢 按行业筛选", filter_opts, index=filter_opts.index(default_f), key="job_industry_filter")
+        if pref == "全部":
+            filtered = STUDENT_RECRUIT
+        else:
+            allowed = set(INDUSTRY_FILTER[pref])
+            filtered = [x for x in STUDENT_RECRUIT if x["type"] in allowed]
+        if not filtered:
+            st.info("该行业暂无校招岗位，换个行业看看吧！")
+            return
         type_colors = {
             "银行": "#1f4e79", "四大": "#2d6a4f", "券商": "#6b489e",
             "互联网": "#3498db", "科技": "#2c3e50", "能源": "#7d6608",
             "新能源车": "#16a085", "航空": "#c0392b", "交通": "#2980b9",
             "综合集团": "#8e44ad", "能源公用": "#27ae60"
         }
-        for i in range(0, len(STUDENT_RECRUIT), 3):
+        for i in range(0, len(filtered), 3):
             cols = st.columns(3)
             for j in range(3):
-                if i + j >= len(STUDENT_RECRUIT):
+                if i + j >= len(filtered):
                     break
-                item = STUDENT_RECRUIT[i + j]
+                item = filtered[i + j]
                 tc = type_colors.get(item["type"], "#666")
                 with cols[j]:
                     st.markdown(
@@ -1902,6 +2028,7 @@ def render_local_recommend():
         if st.button("🎲 换一批推荐", key="refresh_places", use_container_width=True):
             st.session_state["place_seed"] = random.randint(0, 9999)
             st.session_state["place_refresh"] = True
+            save_state()  # 立即持久化，防止 rerun 后从旧 JSON 恢复
             st.rerun()
     with c2:
         if st.button("🗓️ 查看我的游玩计划", use_container_width=True):
@@ -1980,6 +2107,11 @@ def render_resource_list():
     selected_tag = st.selectbox("按标签筛选", ["全部"] + all_tags)
     arts = [art for art in EXPERIENCE_LIST
             if selected_tag == "全部" or art["tag"] == selected_tag]
+    # 个性化：按用户方向把相关标签的经验贴排前面
+    goal = st.session_state.get("goal_mode", "career")
+    pref_tags = {"academic": ["学习", "论文", "选课"], "career": ["秋招"]}.get(goal, [])
+    if pref_tags:
+        arts = sorted(arts, key=lambda a: (0 if a["tag"] in pref_tags else 1, a["title"]))
     if not arts:
         st.info("该标签下暂无经验贴")
         return
@@ -2351,6 +2483,7 @@ def render_header_widgets(evts):
 def route_page(all_events):
     p = st.session_state["current_page"]
     if p == "study_all":
+        render_personal_banner(all_events)
         render_deadline_head(all_events)
         render_timeline(all_events)
         render_heatmap(all_events)
@@ -2580,6 +2713,11 @@ def render_buddy():
 def main():
     render_global_css()
     render_cover()
+    # 新用户引导（可跳过）：只有全新会话且未完成引导时出现
+    if st.session_state.get("launched") and not st.session_state.get("onboarding_done", False):
+        render_onboarding()
+        save_state()
+        st.stop()
     evts = get_all_events()
     maybe_show_ddd_alert(evts)
     render_header_widgets(evts)
