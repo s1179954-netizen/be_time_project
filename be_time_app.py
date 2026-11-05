@@ -34,12 +34,8 @@ def save_state():
             "saved_articles": st.session_state.get("saved_articles", []),
             "place_seed": st.session_state.get("place_seed", 0),
             "free_hours": st.session_state.get("free_hours", 1.0),
-            "user_profile": st.session_state.get("user_profile", {}),
             "dark_mode": st.session_state.get("dark_mode", False),
             "identity_mode": st.session_state.get("identity_mode", "student"),
-            "selected_industry": st.session_state.get("selected_industry", "金融"),
-            "goal_mode": st.session_state.get("goal_mode", "career"),
-            "onboarding_done": st.session_state.get("onboarding_done", True),
             "timeline_view": st.session_state.get("timeline_view", "all"),
             "scores": st.session_state.get("scores", {}),
             "applications": st.session_state.get("applications", []),
@@ -960,6 +956,9 @@ IANG是非本地毕业生留港最重要签证通道，毕业后不需要预先�
 ]
 # -------------------------- Session State 初始化 --------------------------
 def init_state():
+    # 引导页按浏览器 URL 标记判断（不再依赖服务器共享文件，任何访客都不会被旧数据"误判"为老用户）：
+    #   URL 带 ob=done（该浏览器填过引导）→ 老用户；否则 → 新用户，展示引导页
+    _ob_done = True if st.query_params.get("ob") == "done" else False
     defaults = {
         "launched": False,
         "current_page": "study_all",
@@ -973,7 +972,7 @@ def init_state():
         "identity_mode": "student",
         "selected_industry": "金融",
         "goal_mode": "career",
-        "onboarding_done": True,
+        "onboarding_done": _ob_done,
         "timeline_view": "all",
         "starred_events": set(),
         "finished_events": set(),
@@ -992,20 +991,17 @@ def init_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-    # 恢复上次保存的数据（本地持久化）
+    # 恢复上次保存的数据（本地持久化；个性化字段除外——它们只属于当前浏览器会话）
     saved = load_state()
     if saved:
         st.session_state["finished_events"] = set(saved.get("finished_events", []))
         st.session_state["starred_events"] = set(saved.get("starred_events", []))
-        for k in ["trip_plan", "fav_places", "saved_articles", "user_profile", "applications", "alert_log", "discussions"]:
+        for k in ["trip_plan", "fav_places", "saved_articles", "applications", "alert_log", "discussions"]:
             if k in saved:
                 st.session_state[k] = saved[k]
-        for k in ["place_seed", "free_hours", "dark_mode", "identity_mode", "selected_industry", "timeline_view", "goal_mode", "onboarding_done"]:
+        for k in ["place_seed", "free_hours", "dark_mode", "identity_mode", "timeline_view"]:
             if k in saved:
                 st.session_state[k] = saved[k]
-    else:
-        # 完全没有历史数据 = 新用户：先展示个性化引导页
-        st.session_state["onboarding_done"] = False
 
 init_state()
 
@@ -1361,13 +1357,15 @@ def render_onboarding():
             st.session_state["goal_mode"] = "academic" if goal == "学术深造" else "career"
             st.session_state["selected_industry"] = industry
             st.session_state["onboarding_done"] = True
-            save_state()  # 立即持久化，防止 rerun 后从旧 JSON 恢复
+            st.query_params["ob"] = "done"  # 浏览器 URL 打上标记，下次打开不再弹引导
+            save_state()  # 立即持久化其他数据，防止 rerun 后从旧 JSON 恢复
             st.rerun()
     c4, c5, c6 = st.columns([2, 1, 2])
     with c5:
         if st.button("先跳过，随便逛逛", key="ob_skip", use_container_width=True):
             st.session_state["onboarding_done"] = True
-            save_state()  # 立即持久化
+            st.query_params["ob"] = "done"  # 浏览器 URL 打上标记，下次打开不再弹引导
+            save_state()  # 立即持久化其他数据
             st.rerun()
 
 
@@ -2417,6 +2415,44 @@ def render_job_apps():
 
 
 # -------------------------- 助手对话页面 --------------------------
+def _gemini_reply(prompt):
+    """调用 Google Gemini 免费档 API（OpenAI 兼容端点）。未配置 Key 时降级为配置指引。"""
+    import urllib.request
+    key = None
+    try:
+        key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        key = None
+    if not key:
+        key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        st.info("🔑 尚未接入 AI：在 **Streamlit Cloud 后台 → Settings → Secrets** 配置 `GEMINI_API_KEY`；本地测试则在项目根目录新建 `.streamlit/secrets.toml` 填入 `GEMINI_API_KEY = \"你的Key\"`。Key 可在 Google AI Studio（aistudio.google.com/apikey）免费申请。")
+        st.markdown("> 配置完成后，这里会自动变为真实 AI 回复（可生成报告大纲、面试题、论文规划）。")
+        return
+    model = "gemini-2.0-flash"
+    try:
+        model = st.secrets.get("GEMINI_MODEL") or model
+    except Exception:
+        pass
+    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        reply = data["choices"][0]["message"]["content"]
+        st.markdown(reply)
+    except Exception as e:
+        st.error(f"🤖 AI 回复失败：{e}\n\n请检查 Key 是否有效、模型名是否可用（当前 {model}）。")
+
+
 def render_assistant_chat():
     st.subheader("🤖 智能助手")
     if "assistant_prompt" not in st.session_state:
@@ -2440,11 +2476,10 @@ def render_assistant_chat():
                f"请基于这些数据，给我本周的时间优先级安排和求职投递节奏建议。")
         st.session_state["assistant_prompt"] = ctx
         st.rerun()
-    user_input = st.text_area("输入你的问题", value=st.session_state["assistant_prompt"], height=140)
+    user_input = st.text_area("输入你的问题", key="assistant_prompt", height=140)
     if st.button("发送提问"):
         st.markdown("### 助手回复")
-        st.markdown("> 这里可以对接大模型，当前为演示占位。你可以用来生成报告大纲、面试题、论文规划。")
-    st.session_state["assistant_prompt"] = ""
+        _gemini_reply(user_input)
 
 
 # -------------------------- 右上角：资料、通知、明暗切换 --------------------------

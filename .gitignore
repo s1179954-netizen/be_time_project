@@ -3,6 +3,7 @@ be_time_state.json
 
 # 敏感配置（含密钥/凭据，禁止上传）
 .env
+.streamlit/
 
 # 本地数据库 / 缓存目录
 chroma_db/
