@@ -1826,15 +1826,22 @@ def render_local_recommend():
     hours = st.slider("可用空闲时长（小时）", min_value=0.5, max_value=4.0,
                       value=st.session_state["free_hours"], step=0.5)
     st.session_state["free_hours"] = hours
-    rng = random.Random(st.session_state["place_seed"])
-    # 换一批时排除上一批展示过的点位，保证每次都有新内容
-    last_titles = st.session_state.get("last_places", [])
-    pool_others = [p for p in PLACE_POOL if p["title"] not in last_titles]
-    if len(pool_others) >= 3:
-        sample = rng.sample(pool_others, k=3)
+    # 推荐列表在会话内固定：只有点「换一批」才重新随机，避免每次刷新都换一批
+    # （否则刚点的「想去」按钮会因列表变化而丢失点击，导致加不进计划）
+    if "place_sample" not in st.session_state or st.session_state.get("place_refresh", False):
+        rng = random.Random(st.session_state["place_seed"])
+        # 换一批时排除上一批展示过的点位，保证每次都有新内容
+        last_titles = st.session_state.get("last_places", [])
+        pool_others = [p for p in PLACE_POOL if p["title"] not in last_titles]
+        if len(pool_others) >= 3:
+            sample = rng.sample(pool_others, k=3)
+        else:
+            sample = rng.sample(PLACE_POOL, k=min(3, len(PLACE_POOL)))
+        st.session_state["place_sample"] = sample
+        st.session_state["last_places"] = [p["title"] for p in sample]
+        st.session_state["place_refresh"] = False
     else:
-        sample = rng.sample(PLACE_POOL, k=min(3, len(PLACE_POOL)))
-    st.session_state["last_places"] = [p["title"] for p in sample]
+        sample = st.session_state["place_sample"]
     # 默认计划日：第一个空闲时段（无空闲则回退到下周六）
     if free_slots:
         default_date = datetime.strptime(free_slots[0]["date"], "%Y-%m-%d").date()
@@ -1894,6 +1901,7 @@ def render_local_recommend():
     with c1:
         if st.button("🎲 换一批推荐", key="refresh_places", use_container_width=True):
             st.session_state["place_seed"] = random.randint(0, 9999)
+            st.session_state["place_refresh"] = True
             st.rerun()
     with c2:
         if st.button("🗓️ 查看我的游玩计划", use_container_width=True):
